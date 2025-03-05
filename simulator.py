@@ -7,7 +7,7 @@ import requests
 from xml_utils import create_node
 from methods import inform
 from diagnostics import diagnostics
-from manipulations import some_manipulation_function  # Предположим, что вы реализовали необходимые функции
+from manipulations import some_manipulation_function  # Предположим, что мы реализовали необходимые функции
 
 NAMESPACES = {
     "soap-enc": "http://schemas.xmlsoap.org/soap/encoding/",
