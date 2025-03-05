@@ -103,7 +103,7 @@ class Simulator:
                     self.handle_connection()
 
     def handle_connection(self):
-        # здесь вы можете обработать соединение
+        # обработываем соединение
         time.sleep(1)  # имитация обработки
         self.on_going_session = False
 
@@ -131,7 +131,7 @@ class Simulator:
         state['result'] = diagnostics[name].results[result]
 
     def run_requested_diagnostics(self):
-        pass  # Здесь можно реализовать выполнение диагностики
+        pass  # Здесь реализуем выполнение диагностики
 
 # Пример использования
 if __name__ == "__main__":
