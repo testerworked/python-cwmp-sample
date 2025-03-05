@@ -4,7 +4,7 @@ import sys
 import time
 import argparse
 from multiprocessing import Process
-from src.main import create_simulator, format_xml
+from main import create_simulator, format_xml
 
 def parse_args():
     parser = argparse.ArgumentParser(description="GenieACS Simulator", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
