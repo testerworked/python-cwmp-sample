@@ -6,8 +6,8 @@ import time
 import requests
 from xml_utils import create_node
 from methods import inform
-from diagnostics import diagnostics
-from manipulations import some_manipulation_function  # Предположим, что мы реализовали необходимые функции
+from diagnostics import Diagnostics
+from manipulations import Manipulations
 
 NAMESPACES = {
     "soap-enc": "http://schemas.xmlsoap.org/soap/encoding/",
@@ -40,7 +40,11 @@ class Simulator:
         
         # Инициализация результатов диагностики
         for key in diagnostics:
-            self.set_result_for_diagnostic(key)
+            self.diagnostics_states[key] = {}
+            self.set_result_for_diagnostic(key) 
+
+        for key in manipulations:
+            setattr(self, key, manipulations[key].__get__(self))
 
     def create_soap_document(self, id, body):
         header_node = create_node("soap-env:Header", {}, [

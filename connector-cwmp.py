@@ -9,7 +9,7 @@ from main import create_simulator, format_xml
 def parse_args():
     parser = argparse.ArgumentParser(description="GenieACS Simulator", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("-u", "--acs-url", default="http://127.0.0.1:57547/", help="ACS URL to contact")
-    parser.add_argument("-m", "--data-model", default="device-00259E-EG8145V5-48575443A94196A5-2023-03-28T154335106Z", help="Data model template")
+    parser.add_argument("-m", "--data-model", default="device-eg8145v5-no-voip", help="Data model template")
     parser.add_argument("-p", "--processes", type=int, default=1, help="Number of devices to simulate")
     parser.add_argument("-w", "--wait", type=float, default=1000, help="Waiting period between process spawning")
     parser.add_argument("-s", "--serial", type=int, default=0, help="Base serial number")

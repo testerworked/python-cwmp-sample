@@ -2,7 +2,7 @@ import http.client
 import json
 from xml_parser import encode_entities
 from xml_utils import node
-from diagnostics import diagnostics
+from diagnostics import Diagnostics
 from models import models
 from datetime import datetime
 

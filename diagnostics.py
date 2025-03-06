@@ -1,113 +1,99 @@
+import asyncio
 import random
-import time
-from threading import Timer
 
-class Diagnostics:
-    def __init__(self):
-        self.diagnostic_duration = 2  # в секундах
-        self.diagnostic_queue = []
+event = '8 DIAGNOSTICS COMPLETE'
+diagnostic_duration = 2  # in seconds
 
-    def finish(self, simulator, name, func, after_seconds):
-        state = simulator.diagnostics_states[name]
+async def finish(simulator, name, func, after_seconds, resolve):
+    state = simulator.diagnostics_states[name]
 
-        def execute():
-            func(simulator)
-            state['running'] = None
-            state['reject'] = None
-            simulator.run_pending_actions(lambda: simulator.start_session("8 DIAGNOSTICS COMPLETE"))
-            simulator.emit('diagnostic', name)
+    await asyncio.sleep(after_seconds)
+    await func(simulator)
+    state.running = None
+    state.reject = None
 
-        timer = Timer(after_seconds, execute)
-        state['running'] = timer
-        timer.start()
+    await simulator.run_pending_actions()
+    await simulator.start_session(event)
+    await resolve(name)
+    simulator.emit('diagnostic', name)
 
-    def queue(self, simulator, name, func):
-        state = simulator.diagnostics_states[name]
-        promise = lambda: self.finish(simulator, name, func, self.diagnostic_duration)
+async def queue(simulator, name, func, after_seconds):
+    async def inner(resolve, reject):
+        simulator.diagnostics_states[name].reject = reject
+        await finish(simulator, name, func, after_seconds, resolve)
 
-        self.diagnostic_queue.append(promise)
-        state['reject'] = None  # Сброс reject функции
+    simulator.diagnostic_queue.append(lambda: asyncio.create_task(inner()))
 
-    def interrupt(self, simulator, name):
-        state = simulator.diagnostics_states[name]
-        if state['running']:
-            state['running'].cancel()
-            state['running'] = None
-        if state['reject']:
-            state['reject'](name)
-            state['reject'] = None
+async def interrupt(simulator, name):
+    state = simulator.diagnostics_states[name]
+    if state.running:
+        state.running.cancel()
+    if state.reject:
+        state.reject(name)
+        state.reject = None
+    state.running = None
 
-    @staticmethod
-    def random_mac():
-        return ":".join(["{:02X}".format(random.randint(0, 255)) for _ in range(6)])
+# Helper functions
+def random_mac():
+    return ":".join(["{:02X}".format(random.randint(0, 255)) for _ in range(6)])
 
-    @staticmethod
-    def random_n(max_value, min_value=1):
-        return random.randint(min_value, max_value)
+def random_n(max_val, min_val=1):
+    return random.randint(min_val, max_val)
 
-    @staticmethod
-    def get_random_from_array(array):
-        return random.choice(array)
+def get_random_from_array(array):
+    return random.choice(array)
 
-class Ping(Diagnostics):
+# Ping Diagnostic
+class Ping:
     path = {
         'tr098': 'InternetGatewayDevice.IPPingDiagnostics.',
         'tr181': 'Device.IP.Diagnostics.IPPing.',
     }
 
-    def run(self, simulator, modified):
+    async def run(self, simulator, modified):
         path = self.path[simulator.TR]
 
-        diagnostics_state = simulator.device.get(path + 'DiagnosticsState')
-        if diagnostics_state is None:
-            return
-
         if modified.get(path + 'DiagnosticsState') is None:
-            # Проверяем изменения в параметрах
-            if any(modified.get(path + param) is not None for param in [
-                'Interface', 'Host', 'Timeout', 'NumberOfRepetitions', 'DataBlockSize', 'DSCP'
-            ]):
-                self.interrupt(simulator, 'ping')
+            if (modified.get(path + 'Interface') is not None or
+                    modified.get(path + 'Host') is not None or
+                    modified.get(path + 'Timeout') is not None or
+                    modified.get(path + 'NumberOfRepetitions') is not None or
+                    modified.get(path + 'DataBlockSize') is not None or
+                    modified.get(path + 'DSCP') is not None):
+                
+                await interrupt(simulator, 'ping')
                 simulator.device.get(path + 'DiagnosticsState')[1] = 'None'
             return
-
-        if diagnostics_state[1] != 'Requested':
+        
+        if simulator.device.get(path + 'DiagnosticsState')[1] != 'Requested':
             return
 
-        self.interrupt(simulator, 'ping')
-
+        # ... Логика пинга продолжается ...
+        
         host = simulator.device.get(path + 'Host')[1]
         if not host or len(host) > 256:
-            self.queue(simulator, 'ping', lambda s: simulator.device.get(path + 'DiagnosticsState')[1] = 'Error_CannotResolveHostName')
+            await queue(simulator, 'ping', lambda s: setattr(s.device.get(path + 'DiagnosticsState'), 1, 'Error_CannotResolveHostName'), diagnostic_duration)
             return
 
-        parameters = {
-            'interface': simulator.device.get(path + 'Interface')[1] or '',
-            'timeout': int(simulator.device.get(path + 'Timeout')[1] or 1000),
-            'number_of_repetitions': int(simulator.device.get(path + 'NumberOfRepetitions')[1] or 1),
-            'data_block_size': int(simulator.device.get(path + 'DataBlockSize')[1] or 1),
-            'dscp': int(simulator.device.get(path + 'DSCP')[1] or 0),
-        }
+        interface = (simulator.device.get(path + 'Interface') or ['', ''])[1]
+        timeout = int((simulator.device.get(path + 'Timeout') or [None, 1000])[1])
+        NumberOfRepetitions = int((simulator.device.get(path + 'NumberOfRepetitions') or [None, 1])[1])
+        dataBlockSize = int((simulator.device.get(path + 'DataBlockSize') or [None, 1])[1])
+        dscp = int((simulator.device.get(path + 'DSCP') or [None, 0])[1])
 
-        if any([
-            len(parameters['interface']) > 256,
-            parameters['timeout'] < 1,
-            parameters['number_of_repetitions'] < 1,
-            parameters['data_block_size'] < 1 or parameters['data_block_size'] > 65535,
-            parameters['dscp'] < 0 or parameters['dscp'] > 63,
-        ]):
-            self.queue(simulator, 'ping', lambda s: simulator.device.get(path + 'DiagnosticsState')[1] = 'Error_Other')
+        if (len(interface) > 256 or
+                timeout < 1 or 
+                NumberOfRepetitions < 1 or 
+                dataBlockSize < 1 or 
+                dataBlockSize > 65535 or 
+                dscp < 0 or 
+                dscp > 63):
+            await queue(simulator, 'ping', lambda s: setattr(s.device.get(path + 'DiagnosticsState'), 1, 'Error_Other'), diagnostic_duration)
             return
         
-        self.queue(simulator, 'ping', self.results()['default'], self.diagnostic_duration)
+        await queue(simulator, 'ping', self.results['default'], diagnostic_duration)
 
-    def results(self):
-        return {
-            'default': lambda simulator: self._set_ping_success(simulator),
-            'error': lambda simulator, error_name='Error_Internal': self._set_ping_error(simulator, error_name),
-        }
-
-    def _set_ping_success(self, simulator):
+    async def default_result(self, simulator):
         path = self.path[simulator.TR]
         simulator.device.get(path + 'DiagnosticsState')[1] = 'Complete'
         simulator.device.get(path + 'SuccessCount')[1] = simulator.device.get(path + 'NumberOfRepetitions')[1]
@@ -115,132 +101,150 @@ class Ping(Diagnostics):
         simulator.device.get(path + 'AverageResponseTime')[1] = '11'
         simulator.device.get(path + 'MinimumResponseTime')[1] = '9'
         simulator.device.get(path + 'MaximumResponseTime')[1] = '14'
-    
-    def _set_ping_error(self, simulator, error_name):
+
+    async def error_result(self, simulator, error_name='Error_Internal'):
         path = self.path[simulator.TR]
         simulator.device.get(path + 'DiagnosticsState')[1] = error_name
 
-# Аналогично создайте классы для Traceroute, SiteSurvey и SpeedTest с аналогичным шаблоном
+ping = Ping()
 
-class Traceroute(Diagnostics):
+# Traceroute Diagnostic
+class Traceroute:
     path = {
         'tr098': 'InternetGatewayDevice.TraceRouteDiagnostics.',
         'tr181': 'Device.IP.Diagnostics.TraceRoute.',
     }
 
-    def run(self, simulator, modified):
+    async def run(self, simulator, modified):
         path = self.path[simulator.TR]
-
-        diagnostics_state = simulator.device.get(path + 'DiagnosticsState')
-        if diagnostics_state is None:
-            return
-
+        
         if modified.get(path + 'DiagnosticsState') is None:
-            if any(modified.get(path + param) is not None for param in [
-                'Interface', 'Host', 'NumberOfTries', 'Timeout', 'DataBlockSize', 'MaxHopCount'
-            ]):
-                self.interrupt(simulator, 'traceroute')
+            if (modified.get(path + 'Interface') is not None or
+                    modified.get(path + 'Host') is not None or
+                    modified.get(path + 'NumberOfTries') is not None or
+                    modified.get(path + 'Timeout') is not None or
+                    modified.get(path + 'DataBlockSize') is not None or
+                    modified.get(path + 'MaxHopCount') is not None):
+                
+                await interrupt(simulator, 'traceroute')
                 simulator.device.get(path + 'DiagnosticsState')[1] = 'None'
             return
 
-        if diagnostics_state[1] != 'Requested':
+        if simulator.device.get(path + 'DiagnosticsState')[1] != 'Requested':
             return
-
-        self.interrupt(simulator, 'traceroute')
-
+        
+        await interrupt(simulator, 'traceroute')
+        
         host = simulator.device.get(path + 'Host')[1]
         if not host or len(host) > 256:
-            self.queue(simulator, 'traceroute', lambda s: simulator.device.get(path + 'DiagnosticsState')[1] = 'Error_CannotResolveHostName')
+            await queue(simulator, 'traceroute', lambda s: setattr(s.device.get(path + 'DiagnosticsState'), 1, 'Error_CannotResolveHostName'), diagnostic_duration)
+            return
+        
+        interface = (simulator.device.get(path + 'Interface') or ['', ''])[1]
+        number_of_tries = int((simulator.device.get(path + 'NumberOfTries') or [None, 1])[1])
+        timeout = int((simulator.device.get(path + 'Timeout') or [None, 1000])[1])
+        data_block_size = int((simulator.device.get(path + 'DataBlockSize') or [None, 1])[1])
+        dscp = int((simulator.device.get(path + 'DSCP') or [None, 0])[1])
+        max_hop_count = int((simulator.device.get(path + 'MaxHopCount') or [None, 30])[1])
+        
+        if (len(interface) > 256 or
+                number_of_tries < 1 or 
+                number_of_tries > 3 or 
+                timeout < 1 or 
+                data_block_size < 1 or 
+                data_block_size > 65535 or 
+                dscp < 0 or 
+                dscp > 63 or 
+                max_hop_count < 1 or 
+                max_hop_count > 64):
+            await queue(simulator, 'traceroute', lambda s: setattr(s.device.get(path + 'DiagnosticsState'), 1, 'Error_MaxHopCountExceeded'), diagnostic_duration)
             return
 
-        parameters = {
-            'interface': simulator.device.get(path + 'Interface')[1] or '',
-            'number_of_tries': int(simulator.device.get(path + 'NumberOfTries')[1] or 1),
-            'timeout': int(simulator.device.get(path + 'Timeout')[1] or 1000),
-            'data_block_size': int(simulator.device.get(path + 'DataBlockSize')[1] or 1),
-            'dscp': int(simulator.device.get(path + 'DSCP')[1] or 0),
-            'max_hop_count': int(simulator.device.get(path + 'MaxHopCount')[1] or 30),
-        }
+        await queue(simulator, 'traceroute', self.results['default'], diagnostic_duration)
 
-        if any([
-            len(parameters['interface']) > 256,
-            parameters['number_of_tries'] < 1 or parameters['number_of_tries'] > 3,
-            parameters['timeout'] < 1,
-            parameters['data_block_size'] < 1 or parameters['data_block_size'] > 65535,
-            parameters['dscp'] < 0 or parameters['dscp'] > 63,
-            parameters['max_hop_count'] < 1 or parameters['max_hop_count'] > 64,
-        ]):
-            self.queue(simulator, 'traceroute', lambda s: simulator.device.get(path + 'DiagnosticsState')[1] = 'Error_MaxHopCountExceeded')
+    async def default_result(self, simulator):
+        path = self.path[simulator.TR]
+        await self.produce_hop_results(simulator, path, False, 8)
+
+    async def produce_hop_results(self, simulator, path, forced_max_hops_error=False, amount_of_hops=8):
+        # Логика генерации результатов маршрута...
+        pass
+
+traceroute = Traceroute()
+
+# Sitesurvey Diagnostic
+class SiteSurvey:
+    path = {
+        'tr181': 'Device.WiFi.NeighboringWiFiDiagnostic.',
+    }
+
+    async def run(self, simulator, modified):
+        path = self.path[simulator.TR]
+        if modified.get(path + 'DiagnosticsState') is None:
+            return
+        
+        field = simulator.device.get(path + 'DiagnosticsState')
+        if not field:
             return
 
-        self.queue(simulator, 'traceroute', self.results()['default'], self.diagnostic_duration)
+        if field[1] != 'Requested':
+            return
+        
+        await interrupt(simulator, 'sitesurvey')
+        await queue(simulator, 'sitesurvey', self.results['default'], diagnostic_duration)
 
-    def results(self):
-        return {
-            'default': lambda simulator: self._set_traceroute_success(simulator),
-            'error_max_hop_count_exceeded': lambda simulator: self._set_traceroute_error(simulator, 'Error_MaxHopCountExceeded'),
-            'error': lambda simulator, error_name='Error_Internal': self._set_traceroute_error(simulator, error_name),
-        }
-
-    def _set_traceroute_success(self, simulator):
+    async def default_result(self, simulator):
         path = self.path[simulator.TR]
-        # Здесь установите логику успешной трассировки
+        # Логика проведения обследования...
+        pass
 
-    def _set_traceroute_error(self, simulator, error_name):
+sitesurvey = SiteSurvey()
+
+# Speedtest Diagnostic
+class SpeedTest:
+    path = {
+        'tr098': 'InternetGatewayDevice.DownloadDiagnostics.',
+        'tr181': 'Device.IP.Diagnostics.DownloadDiagnostics.',
+    }
+
+    async def run(self, simulator, modified):
         path = self.path[simulator.TR]
-        simulator.device.get(path + 'DiagnosticsState')[1] = error_name
 
-# Экспортируем диагностические тесты
-exports = {
-    'ping': Ping(),
-    'traceroute': Traceroute()
-    #SiteSurvey и SpeedTest
-}
+        if modified.get(path + 'DiagnosticsState') is None:
+            if (modified.get(path + 'Interface') is not None or
+                    modified.get(path + 'DownloadURL') is not None or
+                    modified.get(path + 'DSCP') is not None or
+                    modified.get(path + 'EthernetPriority') is not None or
+                    modified.get(path + 'TimeBasedTestDuration') is not None or
+                    modified.get(path + 'TimeBasedTestMeasurementInterval') is not None or
+                    modified.get(path + 'TimeBasedTestMeasurementOffset') is not None or
+                    modified.get(path + 'NumberOfConnections') is not None or
+                    modified.get(path + 'EnablePerConnectionResults') is not None):
+                
+                await interrupt(simulator, 'speedtest')
+                simulator.device.get(path + 'DiagnosticsState')[1] = 'None'
+            return
+        
+        if simulator.device.get(path + 'DiagnosticsState')[1] != 'Requested':
+            return
+        
+        await interrupt(simulator, 'speedtest')
 
-# Пример использования
-if __name__ == "__main__":
-    class Simulator:
-        def __init__(self):
-            self.diagnostics_states = {
-                'ping': {'running': None, 'reject': None},
-                'traceroute': {'running': None, 'reject': None},
-                # Добавьте дополнительные состояния для других диагностик
-            }
-            self.device = {
-                'Device.IP.Diagnostics.IPPing.DiagnosticsState': [False, 'Requested'],
-                'Device.IP.Diagnostics.TraceRoute.DiagnosticsState': [False, 'Requested'],
-                # .... другие параметры
-            }
+        download_url = simulator.device.get(path + 'DownloadURL')[1]
+        if not download_url or len(download_url) > 2048:
+            await queue(simulator, 'speedtest', lambda s: setattr(s.device.get(path + 'DiagnosticsState'), 1, 'Error_CannotResolveHostName'), diagnostic_duration)
+            return
+        
+        # ... Остальная логика...
+        
+        await queue(simulator, 'speedtest', self.results['default'], diagnostic_duration)
 
-        def get(self, key):
-            return self.device.get(key)
+    async def default_result(self, simulator):
+        path = self.path[simulator.TR]
+        simulator.device.get(path + 'DiagnosticsState')[1] = 'Complete'
+        # ... Логика обработки результата...
+        pass
 
-        def set(self, key, value):
-            self.device[key] = value
+speedtest = SpeedTest()
 
-        def emit(self, event, name):
-            print(f'Event emitted: {event} for {name}')
-
-        def run_pending_actions(self, action):
-            action()  # Исполняем действие
-
-        def start_session(self, message):
-            print(f'Starting session: {message}')
-
-    # Пример запуска
-    simulator = Simulator()
-    # Тестируем ping
-    ping_test = exports['ping']
-    modified_ping = {
-        'Device.IP.Diagnostics.IPPing.DiagnosticsState': 'Requested',
-        'Device.IP.Diagnostics.IPPing.Host': ['example.com']
-    }
-    ping_test.run(simulator, modified_ping)
-
-    # Тестируем traceroute
-    traceroute_test = exports['traceroute']
-    modified_traceroute = {
-        'Device.IP.Diagnostics.TraceRoute.DiagnosticsState': 'Requested',
-        'Device.IP.Diagnostics.TraceRoute.Host': ['example.com']
-    }
-    traceroute_test.run(simulator, modified_traceroute)
+# Здесь можно добавить экспорт или использование созданных классов.
